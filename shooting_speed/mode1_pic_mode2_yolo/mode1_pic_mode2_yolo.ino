@@ -4,11 +4,12 @@
 #include "StreamIO.h"
 #include "VideoStreamOverlay.h"
 #include "ObjectClassList.h"
+#include "PowerMode.h"
 
 // General configurations
 #define CHANNEL 0
 #define FILENAME_PREFIX "image_"
-#define NUM_IMAGES 100
+#define NUM_IMAGES 3
 
 // YOLO configurations
 #define CHANNELNN 3
@@ -16,21 +17,39 @@
 #define NNHEIGHT 320
 
 // Mode selection (1 for Capture and Save Images, 2 for YOLO Processing)
-#define MODE 1
+#define MODE 2
+
+// Power mode configuration
+#define WAKEUP_SOURCE 0  // AON Timer
+#if (WAKEUP_SOURCE == 0)
+    #define CLOCK 0
+    #define SLEEP_DURATION 20
+    uint32_t PM_AONtimer_setting[2] = {CLOCK, SLEEP_DURATION};
+    #define WAKEUP_SETTING (uint32_t)(PM_AONtimer_setting)
+#endif
 
 // Video settings
-VideoSetting config(VIDEO_HD, CAM_FPS, VIDEO_JPEG, 1);
-VideoSetting configNN(NNWIDTH, NNHEIGHT, 5, VIDEO_RGB, 0);
+VideoSetting config(VIDEO_FHD, CAM_FPS, VIDEO_JPEG, 1);
+VideoSetting configNN(NNWIDTH, NNHEIGHT, 5, VIDEO_RGB, 0); // 初始化 YOLO 模式使用的设置
 
 // Objects for camera, SD card, and YOLO
 AmebaFatFS fs;
-NNObjectDetection ObjDet;
-StreamIO videoStreamerNN(1, 1);
+NNObjectDetection ObjDet;      // YOLO 对象
+StreamIO videoStreamerNN(1, 1); // 视频流对象
 
 // Time measurement variables
-unsigned long power_on_time; // From power-on to ready for capture
-unsigned long start_time;    // Time when capture starts
-unsigned long end_time;
+unsigned long preparation_time; // From power-on to ready for capture
+unsigned long start_time;       // Time when capture starts
+unsigned long end_time;         // Time when process ends
+
+// Function to enter Standby mode
+void enterStandby() {
+    Serial.println("Entering Standby Mode...");
+    PowerMode.begin(STANDBY_MODE, WAKEUP_SOURCE, WAKEUP_SETTING);
+    PowerMode.start();
+    Serial.println("You won't see this log after entering Standby Mode");
+    while (1); // Ensure no further code execution
+}
 
 void captureAndSaveImages() {
     uint32_t img_addr = 0;
@@ -53,7 +72,6 @@ void captureAndSaveImages() {
         file.write((uint8_t*)img_addr, img_len);
         file.close();
 
-        // Output details
         Serial.print("Image ");
         Serial.print(i);
         Serial.println(" saved.");
@@ -62,21 +80,22 @@ void captureAndSaveImages() {
     // Record end time
     end_time = millis();
 
-    // Output time metrics
-    Serial.print("Power-on to ready time: ");
-    Serial.print(power_on_time);
+    Serial.print("Preparation before photo: ");
+    Serial.print(preparation_time);
     Serial.println(" ms");
 
     Serial.print("Total execution time: ");
     Serial.print(end_time - start_time);
     Serial.println(" ms");
+
+    enterStandby();
 }
 
 void captureAndProcessWithYOLO() {
     uint32_t img_addr = 0;
     uint32_t img_len = 0;
 
-    // Initialize object detection (YOLO) here
+    // Initialize object detection (YOLO)
     ObjDet.configVideo(configNN);
     ObjDet.modelSelect(OBJECT_DETECTION, DEFAULT_YOLOV4TINY, NA_MODEL, NA_MODEL);
     ObjDet.begin();
@@ -112,37 +131,25 @@ void captureAndProcessWithYOLO() {
             Serial.println("Failed to save file");
         }
 
-        // Print detection results
         Serial.print("Frame ");
         Serial.print(i + 1);
         Serial.print(": Detected ");
         Serial.print(objectCount);
         Serial.println(" objects.");
-        if (objectCount > 0) {
-            for (size_t j = 0; j < results.size(); j++) {
-                int objType = results[j].type();
-                if (itemList[objType].filter) {
-                    ObjectDetectionResult item = results[j];
-                    Serial.print(" - ");
-                    Serial.print(itemList[objType].objectName);
-                    Serial.print(": Confidence = ");
-                    Serial.println(item.score());
-                }
-            }
-        }
     }
 
     // Record end time
     end_time = millis();
 
-    // Output time metrics
-    Serial.print("Power-on to ready time: ");
-    Serial.print(power_on_time);
+    Serial.print("Preparation before photo: ");
+    Serial.print(preparation_time);
     Serial.println(" ms");
 
     Serial.print("Total execution time: ");
     Serial.print(end_time - start_time);
     Serial.println(" ms");
+
+    enterStandby();
 }
 
 void setup() {
@@ -151,21 +158,31 @@ void setup() {
     // Record the time from power-on to ready
     unsigned long init_start = millis();
 
-    // Initialize camera
-    Camera.configVideoChannel(CHANNEL, config);
-    Camera.configVideoChannel(CHANNELNN, configNN);
-    Camera.videoInit();
-    Camera.channelBegin(CHANNEL);
-    Camera.channelBegin(CHANNELNN);
+    if (MODE == 1) {
+        // Initialize camera
+        Camera.configVideoChannel(CHANNEL, config);
+        Camera.videoInit();
+        Camera.channelBegin(CHANNEL);
+    } else if (MODE == 2) {
+        // Initialize camera
+        Camera.configVideoChannel(CHANNEL, config);
+        Camera.configVideoChannel(CHANNELNN, configNN);
+        Camera.videoInit();
+        Camera.channelBegin(CHANNEL);
+        Camera.channelBegin(CHANNELNN);
+    } else {
+        Serial.println("cam initualize failed");
+    }
+
 
     // Initialize SD card
     fs.begin();
 
     // Add delay to ensure proper hardware initialization
-    delay(500); // Ensure proper initialization before capturing
+    delay(1); 
 
-    // Record power-on to ready time
-    power_on_time = millis() - init_start;
+    // Record preparation time
+    preparation_time = millis() - init_start;
 
     // Execute based on mode
     if (MODE == 1) {
